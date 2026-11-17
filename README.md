@@ -1,4 +1,4 @@
-# RideFlow – Event-Driven Ride-Hailing Backend
+# RideFlow – (distributed-systems)
 
 An event-driven, microservices-based ride-hailing backend built using **Java, Spring Boot, Apache Kafka, Redis, PostgreSQL, and Docker**.
 
