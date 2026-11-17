@@ -1,326 +1,333 @@
-# RideFlow:Microservices Platform
+# RideFlow – Event-Driven Ride-Hailing Backend
 
-An event-driven, microservices-based ride-hailing backend built with **Java** and **Spring Boot**.
+An event-driven, microservices-based ride-hailing backend built using **Java, Spring Boot, Apache Kafka, Redis, PostgreSQL, and Docker**.
 
-RideFlow models the core ride-booking workflow end to end:
-
-**Rider request → Kafka → Driver matching → Redis GEO search → Driver assignment → Kafka → Ride lifecycle**
-
-| Concern | Technology |
-|---|---|
-| Asynchronous service-to-service events | Apache Kafka |
-| Real-time driver location and proximity search | Redis (in-memory) with GEO indexing |
-| Synchronous service-to-service calls | Spring Cloud OpenFeign |
-| Ride persistence | **PostgreSQL** via Spring Data JPA |
-| Containerization | Docker and Docker Compose (all three services and all infrastructure) |
-| Orchestration | Kubernetes (in progress) |
-
-> **Status note: work in progress, commits coming.**
-> The following have been completed and tested locally, and will be pushed to this repository in upcoming commits:
-> - Persistence migrated from **MySQL to PostgreSQL**
-> - **All three microservices and all infrastructure** (PostgreSQL, Redis, Zookeeper, Kafka) containerized with Docker. They run together and communicate over a shared Docker network
-> - **Kubernetes** deployment, which is currently in progress
->
-> Until then, the code on `main` may still reference MySQL and run the services outside Docker. *(Remove this note once everything is pushed.)*
-
----
+RideFlow demonstrates how independent backend services communicate to process ride requests, locate nearby drivers, match drivers with riders, and manage ride lifecycles.
 
 ## Architecture
 
-```
-                         ┌──────────────────────┐
-                         │      Rider App       │
-                         └──────────┬───────────┘
-                                    │ HTTP
-                                    ▼
-                         ┌──────────────────────┐
-                         │    Ride Service      │
-                         │       :8083          │
-                         │                      │
-                         │ Ride Lifecycle       │
-                         │ Fare Estimation      │
-                         │ PostgreSQL Storage   │
-                         └──────────┬───────────┘
-                                    │
-                         Kafka: ride.requested
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │  Matching Service    │
-                         │       :8084          │
-                         │                      │
-                         │ Driver Matching      │
-                         │ Kafka Consumer       │
-                         └──────────┬───────────┘
-                                    │
-                              OpenFeign HTTP
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │   Location Service   │
-                         │       :8082          │
-                         │                      │
-                         │ Nearby Driver Search │
-                         │ Driver Locations     │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                              ┌─────────────┐
-                              │    Redis    │
-                              │  GEO Index  │
-                              └─────────────┘
+```text
+                  Rider Application
+                         |
+                         | HTTP REST
+                         v
+                 +------------------+
+                 |   Ride Service   |
+                 |     :8083        |
+                 |                  |
+                 | Ride Management  |
+                 | PostgreSQL       |
+                 +--------+---------+
+                          |
+                          | Kafka: ride.requested
+                          v
+                 +------------------+
+                 | Matching Service |
+                 |     :8084        |
+                 |                  |
+                 | Driver Matching  |
+                 +--------+---------+
+                          |
+                          | OpenFeign
+                          v
+                 +------------------+
+                 | Location Service |
+                 |     :8082        |
+                 |                  |
+                 | Redis GEO Search |
+                 +--------+---------+
+                          |
+                          v
+                     +--------+
+                     | Redis  |
+                     |  GEO   |
+                     +--------+
 
-                         Matching Service
-                                │
-                         Kafka: ride.matched
-                                │
-                                ▼
-                         ┌──────────────────────┐
-                         │    Ride Service      │
-                         │ Assign Driver        │
-                         │ Update Ride Status   │
-                         └──────────────────────┘
+       Matching Service
+              |
+              | Kafka: ride.matched
+              v
+         Ride Service
+              |
+              v
+       Driver Assignment
 ```
 
 ## Microservices
 
-| Service | Port | Responsibility | Storage |
+| Service | Port | Responsibility | Technology |
 |---|---:|---|---|
-| `ride-service` | `8083` | Ride lifecycle, fare estimation, ride history | PostgreSQL |
-| `location-service` | `8082` | Driver GPS location and nearby-driver search | Redis GEO |
-| `matching-service` | `8084` | Driver matching and event processing | Stateless |
-
-## Features
-
-**Ride management**
-- Create a ride request and persist it in PostgreSQL
-- Estimate ride fare
-- Track ride status through its full lifecycle
-- Start, complete or cancel a ride
-- Retrieve ride details and a rider's ride history
-
-**Real-time driver location**
-- Driver location updates stored in a Redis GEO index
-- Radius-based nearby-driver search with distance calculation
-- Top-N nearest drivers retrieval
-- Driver removal / offline support
-
-**Driver matching**
-- Kafka-based asynchronous processing of ride requests
-- OpenFeign calls to Location Service for nearby drivers
-- Driver scoring and selection
-- Publishes a ride-matched event back to Kafka
-
----
-
-## End-to-End Ride Flow
-
-1. **Rider requests a ride.** `POST /api/v1/rides/request`. Ride Service validates the request, saves the ride in PostgreSQL with its initial status, and publishes a `RideRequestedEvent` to the `ride.requested` topic.
-2. **Matching Service consumes the event** and calls Location Service through OpenFeign with the pickup coordinates.
-3. **Location Service searches Redis GEO** and returns nearby drivers sorted by distance.
-4. **Matching Service selects a driver** using a weighted score:
-   - 70% distance
-   - 30% simulated driver rating
-
-   > The rating is simulated because a dedicated Driver Service is not yet part of this repository.
-5. **Matching Service publishes `ride.matched`** containing `rideId`, `riderId`, `driverId`, driver coordinates and distance.
-6. **Ride Service consumes `ride.matched`**, assigns the driver, and moves the ride from `MATCHING` to `ACCEPTED`.
-
-### Ride status lifecycle
-
-```
-REQUESTED → MATCHING → ACCEPTED → RIDE_STARTED → COMPLETED
-
-REQUESTED / MATCHING / ACCEPTED → CANCELLED
-```
-
----
+| Ride Service | 8083 | Ride requests, lifecycle, fare estimation and persistence | Spring Boot, PostgreSQL |
+| Location Service | 8082 | Driver location updates and nearby-driver search | Spring Boot, Redis GEO |
+| Matching Service | 8084 | Driver selection and event processing | Spring Boot, Kafka, OpenFeign |
 
 ## Tech Stack
 
-**Backend:** Java 24, Spring Boot, Spring Web, Spring Data JPA, Spring Data Redis, Spring Validation, Spring Kafka, Spring Cloud OpenFeign, Spring Boot Actuator, Lombok
+**Backend**
+- Java
+- Spring Boot
+- Spring Web
+- Spring Data JPA
+- Spring Data Redis
+- Spring Kafka
+- Spring Cloud OpenFeign
+- Spring Boot Actuator
 
-**Infrastructure:** Apache Kafka, Zookeeper, Redis, **PostgreSQL**, **Docker**, **Docker Compose**, Kubernetes (in progress)
+**Databases and Messaging**
+- PostgreSQL
+- Redis GEO
+- Apache Kafka
+- Apache ZooKeeper
 
-**Tools:** Maven, IntelliJ IDEA, Postman, Git, GitHub
+**DevOps and Tools**
+- Docker
+- Docker Compose
+- Maven
+- IntelliJ IDEA
+- Postman
+- Git and GitHub
+
+## Key Features
+
+### 1. Ride Management
+- Create and persist ride requests in PostgreSQL.
+- Estimate ride fares.
+- Retrieve ride details and rider ride history.
+- Start, complete, and cancel rides.
+- Manage ride status transitions.
+
+### 2. Real-Time Driver Location
+- Store driver coordinates using Redis GEO.
+- Update driver locations.
+- Search for nearby drivers using geographic radius queries.
+- Retrieve nearby drivers with distance information.
+- Remove driver locations when drivers go offline.
+
+### 3. Driver Matching
+- Process ride requests asynchronously using Kafka.
+- Retrieve nearby drivers through OpenFeign.
+- Select a suitable driver based on distance and simulated driver rating.
+- Publish driver-matching results through Kafka.
+
+### 4. Microservices Communication
+- Kafka for asynchronous event-driven communication.
+- OpenFeign for synchronous service-to-service communication.
+- Docker Compose for running services and infrastructure together.
+
+## End-to-End Ride Workflow
+
+1. A rider submits a ride request to the Ride Service.
+2. Ride Service validates the request and persists it in PostgreSQL.
+3. Ride Service publishes a `RideRequestedEvent` to the `ride.requested` Kafka topic.
+4. Matching Service consumes the event.
+5. Matching Service calls Location Service through OpenFeign.
+6. Location Service searches Redis GEO for nearby drivers.
+7. Matching Service evaluates available drivers and selects a suitable candidate.
+8. Matching Service publishes a `RideMatchedEvent` to the `ride.matched` Kafka topic.
+9. Ride Service consumes the event, assigns the selected driver, and updates the ride status.
+
+**Driver selection:** The current implementation uses a weighted scoring approach based on distance (70%) and simulated driver rating (30%). A dedicated Driver Service is not yet implemented.
+
+### Ride Status Lifecycle
+
+```text
+REQUESTED
+    |
+    v
+ MATCHING
+    |
+    v
+ ACCEPTED
+    |
+    v
+ RIDE_STARTED
+    |
+    v
+ COMPLETED
+```
+
+A ride can also transition to `CANCELLED` from supported earlier states.
 
 ## Project Structure
 
-```
+```text
 RideFlow/
+│
 ├── docker-compose.yml
-├── location-service/
-│   └── location-service/
-│       ├── src/
-│       ├── Dockerfile
-│       └── pom.xml
-├── matching-service/
-│   └── matching-service/
-│       ├── src/
-│       ├── Dockerfile
-│       └── pom.xml
+│
 ├── ride-service/
+│   ├── Dockerfile
 │   └── ride-service/
 │       ├── src/
-│       ├── Dockerfile
-│       └── pom.xml
-├── k8s/                  (Kubernetes manifests, in progress)
-└── .gitignore
+│       ├── pom.xml
+│       └── mvnw
+│
+├── location-service/
+│   ├── Dockerfile
+│   └── location-service/
+│       ├── src/
+│       ├── pom.xml
+│       └── mvnw
+│
+├── matching-service/
+│   ├── Dockerfile
+│   └── matching-service/
+│       ├── src/
+│       ├── pom.xml
+│       └── mvnw
+│
+└── README.md
 ```
-
----
 
 ## Getting Started
 
 ### Prerequisites
 
-- JDK 24+
-- Maven (or use the bundled `mvnw` wrapper)
-- Docker Desktop with Docker Compose
+- Java Development Kit (JDK 21 or compatible)
+- Docker Desktop
+- Docker Compose
 - Git
+
+Verify your installations:
 
 ```bash
 java -version
-mvn -version
 docker --version
 docker compose version
 ```
 
-### Option A: Run everything with Docker (recommended)
+### Run the Complete Application Using Docker
 
-Every microservice and every piece of infrastructure is containerized. One command builds the service images and starts the full system:
+Clone the repository:
+
+```bash
+git clone https://github.com/Vishwanath-B-M/Ride-flow.git
+
+cd Ride-flow
+```
+
+The current Docker Compose configuration uses an external PostgreSQL volume. Create it before the first startup if it does not already exist:
+
+```bash
+docker volume create uber-app_postgres-data
+```
+
+Build and start the application:
 
 ```bash
 docker compose up --build -d
 ```
 
-| Container | Port |
-|---|---:|
-| `ride-service` | `8083` |
-| `matching-service` | `8084` |
-| `location-service` | `8082` |
-| PostgreSQL | `5432` |
-| Redis | `6379` |
-| Zookeeper | `2181` |
-| Kafka | `9092` |
-
-Inside the Docker network, containers reach each other by **service name** rather than `localhost` (for example, Matching Service calls Location Service by its Compose service name, and every service connects to Kafka, Redis and PostgreSQL by name). This is why the full flow, from ride request to driver assignment, works across containers.
-
-Check that everything is up and watch the logs:
+Check running containers:
 
 ```bash
 docker compose ps
-docker compose logs -f ride-service
 ```
 
-Stop everything:
+Check application logs:
+
+```bash
+docker compose logs -f ride-service
+docker compose logs -f location-service
+docker compose logs -f matching-service
+```
+
+### Service Endpoints
+
+| Component | URL |
+|---|---|
+| Ride Service | http://localhost:8083 |
+| Location Service | http://localhost:8082 |
+| Matching Service | http://localhost:8084 |
+| PostgreSQL | localhost:5432 |
+| Redis | localhost:6379 |
+| Kafka | localhost:9092 |
+
+### Health Checks
+
+```bash
+curl http://localhost:8083/actuator/health
+
+curl http://localhost:8082/actuator/health
+
+curl http://localhost:8084/actuator/health
+```
+
+### Stop the Application
+
+```bash
+docker compose stop
+```
+
+To stop and remove containers and the Compose network:
 
 ```bash
 docker compose down
 ```
 
-Once the containers are running, jump to [Try It Out](#try-it-out) to exercise the system.
+The PostgreSQL external volume is preserved by these commands. Avoid `docker compose down -v` if you want to retain your database.
 
-### Option B: Infrastructure in Docker, services with Maven
+## Running Services Locally
 
-Useful for development and debugging. Start only the infrastructure containers (PostgreSQL, Redis, Zookeeper, Kafka), then run each service from your IDE or terminal.
+For development, you can run the infrastructure using Docker:
 
 ```bash
 docker compose up -d postgres redis zookeeper kafka
 ```
 
-Then start each service in its own terminal:
+Then run each Spring Boot application in a separate terminal.
 
-**Location Service** (`http://localhost:8082`)
-
-```bash
-cd location-service/location-service
-./mvnw spring-boot:run          # Windows: .\mvnw.cmd spring-boot:run
-```
-
-**Matching Service** (`http://localhost:8084`)
-
-```bash
-cd matching-service/matching-service
-./mvnw spring-boot:run          # Windows: .\mvnw.cmd spring-boot:run
-```
-
-**Ride Service** (`http://localhost:8083`)
+**Ride Service**
 
 ```bash
 cd ride-service/ride-service
-./mvnw spring-boot:run          # Windows: .\mvnw.cmd spring-boot:run
+./mvnw spring-boot:run
 ```
 
-When running outside Docker, services connect to the infrastructure on `localhost`.
-
----
-
-## Kubernetes (In Progress)
-
-I am currently deploying the same system to Kubernetes. The goal is to run each microservice as its own Deployment with a Service for discovery, ConfigMaps and Secrets for configuration, and the stateful infrastructure (PostgreSQL, Kafka) deployed with persistent storage. Manifests will live in the `k8s/` directory and will be committed once they are working.
-
----
-
-## PostgreSQL Configuration
-
-Ride Service stores rides in PostgreSQL through Spring Data JPA. The relevant pieces are:
-
-**Maven dependency** (`ride-service/ride-service/pom.xml`)
-
-```xml
-<dependency>
-    <groupId>org.postgresql</groupId>
-    <artifactId>postgresql</artifactId>
-    <scope>runtime</scope>
-</dependency>
-```
-
-**Spring properties** (example; match the database name and credentials to your `docker-compose.yml`)
-
-```properties
-spring.datasource.url=jdbc:postgresql://localhost:5432/<database-name>
-spring.datasource.username=<username>
-spring.datasource.password=<password>
-spring.jpa.hibernate.ddl-auto=update
-```
-
-Do not commit real credentials. For anything beyond local development, supply database, Kafka and Redis settings through environment variables or a secrets manager.
-
-**Inspect the data**
+**Location Service**
 
 ```bash
-docker exec -it <postgres-container-name> psql -U <username> -d <database-name>
+cd location-service/location-service
+./mvnw spring-boot:run
 ```
 
----
+**Matching Service**
+
+```bash
+cd matching-service/matching-service
+./mvnw spring-boot:run
+```
+
+On Windows, use `mvnw.cmd` instead of `./mvnw`.
 
 ## API Reference
 
-### Ride Service: `http://localhost:8083/api/v1/rides`
+### Ride Service
+
+Base URL: `http://localhost:8083/api/v1/rides`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/request` | Create a ride request |
-| `GET` | `/{rideId}` | Get ride details |
-| `GET` | `/rider/{riderId}` | Get a rider's ride history |
-| `PUT` | `/{rideId}/start` | Start a ride |
-| `PUT` | `/{rideId}/complete` | Complete a ride |
-| `PUT` | `/{rideId}/cancel` | Cancel a ride |
+| POST | `/request` | Create a ride request |
+| GET | `/{rideId}` | Retrieve ride details |
+| GET | `/rider/{riderId}` | Retrieve rider ride history |
+| PUT | `/{rideId}/start` | Start a ride |
+| PUT | `/{rideId}/complete` | Complete a ride |
+| PUT | `/{rideId}/cancel` | Cancel a ride |
 
-### Location Service: `http://localhost:8082/api/v1/locations`
+### Location Service
+
+Base URL: `http://localhost:8082/api/v1/locations`
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/drivers/update` | Update a driver's location |
-| `GET` | `/driver/nearby` | Find nearby drivers |
-| `DELETE` | `/drivers/{driverId}` | Remove a driver's location |
+| POST | `/drivers/update` | Update driver location |
+| GET | `/driver/nearby` | Find nearby drivers |
+| DELETE | `/drivers/{driverId}` | Remove driver location |
 
----
+## Example API Requests
 
-## Try It Out
-
-**1. Register a nearby driver**
+### 1. Update Driver Location
 
 ```http
 POST http://localhost:8082/api/v1/locations/drivers/update
@@ -333,24 +340,13 @@ Content-Type: application/json
 }
 ```
 
-**2. Find nearby drivers**
+### 2. Find Nearby Drivers
 
 ```http
 GET http://localhost:8082/api/v1/locations/driver/nearby?latitude=26.9124&longitude=75.7873&radius=5.0
 ```
 
-```json
-[
-  {
-    "driverId": "driver:4",
-    "latitude": 26.912499496045946,
-    "longitude": 75.7874009013176,
-    "distanceInKm": 0.0149
-  }
-]
-```
-
-**3. Request a ride**
+### 3. Request a Ride
 
 ```http
 POST http://localhost:8083/api/v1/rides/request
@@ -367,65 +363,54 @@ Content-Type: application/json
 }
 ```
 
-**4. Move the ride through its lifecycle**
-
-```http
-PUT http://localhost:8083/api/v1/rides/{rideId}/start
-PUT http://localhost:8083/api/v1/rides/{rideId}/complete
-```
-
----
-
 ## Kafka Topics
 
 | Topic | Producer | Consumer | Purpose |
 |---|---|---|---|
-| `ride.requested` | Ride Service | Matching Service | A rider has requested a ride |
-| `ride.matched` | Matching Service | Ride Service | A driver has been selected |
+| `ride.requested` | Ride Service | Matching Service | Process new ride requests |
+| `ride.matched` | Matching Service | Ride Service | Process driver assignments |
 
 ## Redis GEO
 
-Driver locations are stored with Redis geospatial commands under the key `drivers:locations`. Location Service uses `GEOADD` to update positions and a radius search to find drivers near the pickup point, returning up to the 10 nearest drivers, sorted by distance.
+Driver coordinates are stored in Redis using geospatial indexing.
 
-## Service Communication
+Location Service uses Redis GEO operations to:
+- Add and update driver coordinates.
+- Search for drivers within a specified radius.
+- Calculate distances between drivers and pickup locations.
+- Retrieve nearby drivers ordered by distance.
 
-| Pattern | Used for |
-|---|---|
-| **Asynchronous (Kafka)** | Ride Service ↔ Matching Service events |
-| **Synchronous (OpenFeign)** | Matching Service → Location Service |
+## Engineering Concepts Demonstrated
+
+- Microservices architecture
+- Event-driven architecture
+- Asynchronous communication with Apache Kafka
+- Synchronous communication with Spring Cloud OpenFeign
+- Geospatial indexing and proximity search with Redis
+- Relational database persistence with PostgreSQL
+- REST API design
+- Containerization using Docker
+- Multi-container orchestration using Docker Compose
+- Service health monitoring using Spring Boot Actuator
+
+## Future Improvements
+
+- Dedicated Driver Service with driver profiles and real ratings.
+- Driver availability and accept/reject workflows.
+- Authentication and authorization.
+- API Gateway and service discovery.
+- Resilience using circuit breakers and retry mechanisms.
+- Kafka retry handling and dead-letter topics.
+- Integration testing with Testcontainers.
+- Centralized logging and distributed tracing.
+- Prometheus and Grafana monitoring.
+- Kubernetes deployment.
+- CI/CD automation.
 
 ---
 
-## Current Status
+**Author:** Vishwanath Basavaraj Mirji
 
-Implemented and tested end to end:
+**GitHub:** [Vishwanath-B-M](https://github.com/Vishwanath-B-M)
 
-- Microservices architecture with Spring Boot
-- Kafka event-driven communication
-- Redis GEO driver location and nearby-driver search
-- OpenFeign service-to-service calls
-- PostgreSQL persistence (migrated from MySQL)
-- Full ride lifecycle and fare estimation
-- Driver matching
-- Dockerized microservices and infrastructure, running and communicating together with Docker Compose
-- Spring Boot Actuator
-
-## Roadmap
-
-- Dedicated Driver Service with real profiles and ratings
-- Driver accept / reject workflow and availability management
-- Authentication and authorization
-- API Gateway and service discovery
-- Resilience4j circuit breaker and retry
-- Kafka retry, dead-letter topics and idempotent event processing
-- Centralized exception handling
-- Integration tests with Testcontainers
-- Prometheus and Grafana monitoring, distributed tracing
-- Externalized configuration and secrets
-- Surge pricing and more realistic fare calculation
-- Kubernetes deployment (in progress)
-- CI/CD pipeline
-
-## What This Project Demonstrates
-
-Practical backend engineering beyond basic CRUD: microservices, event-driven architecture, Apache Kafka, Redis geospatial search, service-to-service communication, relational persistence with PostgreSQL, a fully containerized system (Docker and Docker Compose, with Kubernetes in progress), and ride state management.
+**Repository:** [RideFlow](https://github.com/Vishwanath-B-M/Ride-flow)
