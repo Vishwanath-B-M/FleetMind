@@ -1,4 +1,5 @@
 
+
 services:
 
   # Redis
@@ -94,15 +95,19 @@ services:
   # Matching Service
   matching-service:
     build:
-      context: ./matching-service/matching-service
-      dockerfile: ../Dockerfile
+      context: ./matching-service
+      dockerfile: Dockerfile
     container_name: matching-service
     ports:
       - "8084:8084"
     environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/uberapp
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       LOCATION_SERVICE_URL: http://location-service:8082
     depends_on:
+      - postgres
       - kafka
       - location-service
     networks:

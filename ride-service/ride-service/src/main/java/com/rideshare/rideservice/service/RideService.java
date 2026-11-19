@@ -1,5 +1,5 @@
 
-        package com.rideshare.rideservice.service;
+package com.rideshare.rideservice.service;
 
 import com.rideshare.event.RideRequestedEvent;
 import com.rideshare.rideservice.dto.RideRequest;
@@ -11,6 +11,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+import com.rideshare.rideservice.exception.InvalidRideStateException;
+import com.rideshare.rideservice.exception.RideNotFoundException;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -81,24 +84,33 @@ public class RideService {
         return mapToResponse(savedRide);
     }
 
-    public void updateRideWithDriver(Long rideId, String driverId) {
+    @Transactional
+    //@Lock(LockModeType.PESSIMISTIC_WRITE)
+public void updateRideWithDriver(Long rideId, String driverId) {
 
-        Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new RuntimeException("Ride not found"));
+    Ride ride = rideRepository.findById(rideId)
+            .orElseThrow(() -> new RideNotFoundException("Ride not found"));
 
-        ride.setDriverId(driverId);
-        ride.setStatus(RideStatus.ACCEPTED);
-
-        rideRepository.save(ride);
+    if (ride.getStatus() != RideStatus.MATCHING) {
+        throw new InvalidRideStateException(
+                "Ride cannot be assigned. Current status: "
+                        + ride.getStatus()
+        );
     }
+
+    ride.setDriverId(driverId);
+    ride.setStatus(RideStatus.ACCEPTED);
+
+    rideRepository.save(ride);
+}
 
     public RideResponse startRide(Long rideId) {
 
         Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new RuntimeException("Ride not found"));
+                .orElseThrow(() -> new RideNotFoundException("Ride not found"));
 
         if (ride.getStatus() != RideStatus.ACCEPTED) {
-            throw new RuntimeException(
+            throw new InvalidRideStateException(
                     "Ride cannot be started. Current status: "
                             + ride.getStatus()
             );
@@ -115,10 +127,10 @@ public class RideService {
     public RideResponse completeRide(Long rideId) {
 
         Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new RuntimeException("Ride not found"));
+                .orElseThrow(() -> new RideNotFoundException("Ride not found"));
 
         if (ride.getStatus() != RideStatus.RIDE_STARTED) {
-            throw new RuntimeException(
+            throw new InvalidRideStateException(
                     "Ride cannot be completed. Current status: "
                             + ride.getStatus()
             );
@@ -133,22 +145,34 @@ public class RideService {
         return mapToResponse(ride);
     }
 
-    public RideResponse cancelRide(Long rideId) {
 
-        Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new RuntimeException("Ride not found"));
+public RideResponse cancelRide(Long rideId) {
 
-        ride.setStatus(RideStatus.CANCELLED);
+    Ride ride = rideRepository.findById(rideId)
+            .orElseThrow(() -> new RideNotFoundException("Ride not found"));
 
-        rideRepository.save(ride);
+    if (ride.getStatus() == RideStatus.RIDE_STARTED
+            || ride.getStatus() == RideStatus.COMPLETED
+            || ride.getStatus() == RideStatus.CANCELLED) {
 
-        return mapToResponse(ride);
+        throw new InvalidRideStateException(
+                "Ride cannot be cancelled. Current status: "
+                        + ride.getStatus()
+        );
     }
+
+    ride.setStatus(RideStatus.CANCELLED);
+
+    rideRepository.save(ride);
+
+    return mapToResponse(ride);
+}
+
 
     public RideResponse getRideById(Long rideId) {
 
         Ride ride = rideRepository.findById(rideId)
-                .orElseThrow(() -> new RuntimeException("Ride not found"));
+                .orElseThrow(() -> new RideNotFoundException("Ride not found"));
 
         return mapToResponse(ride);
     }

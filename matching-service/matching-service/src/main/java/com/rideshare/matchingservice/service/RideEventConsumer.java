@@ -54,11 +54,16 @@ public class RideEventConsumer {
 
         } catch (Exception e) {
 
-            log.error(
-                    "ERROR processing ride request: {}",
-                    event.getRideId(),
-                    e
-            );
-        }
+    log.error(
+            "ERROR processing ride request: {}",
+            event.getRideId(),
+            e
+    );
+
+    throw new RuntimeException(
+            "Failed to process ride request: " + event.getRideId(),
+            e
+    );
+}
     }
 }
